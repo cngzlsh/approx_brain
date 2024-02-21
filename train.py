@@ -6,7 +6,7 @@ from utils import *
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
 import copy
-import wandb
+
 
 
 seed = 123
@@ -237,7 +237,8 @@ def eval_rnn(model, test_loader, criterion, save_Y_hat=False):
         return eval_loss/n_batches
     
 def train_transformer(model, train_loader, test_loader, optimiser, criterion, num_epochs, verbose=True, force_stop=False, batch_first=False, scheduler=None, use_wandb=False, stim_type_indices=False):
-    
+    if use_wandb:
+        import wandb
     start = time.time()
 
     eval_losses, train_losses, best_eval_epoch, best_eval_params = [], [], -1, -1
