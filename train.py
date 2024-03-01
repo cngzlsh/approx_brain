@@ -6,7 +6,7 @@ from utils import *
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
 import copy
-
+import wandb
 
 
 seed = 123
@@ -106,7 +106,6 @@ def train_rnn(model, train_loader, test_loader, optimiser, criterion, num_epochs
     Main training function. Iterates through training set in mini batches, updates gradients and compute loss.
     '''
     start = time.time()
-
     eval_losses, train_losses, best_eval_epoch, best_eval_params = [], [], -1, -1
     init_eval_loss = eval_rnn(model, test_loader, criterion)
     if verbose:
@@ -115,20 +114,18 @@ def train_rnn(model, train_loader, test_loader, optimiser, criterion, num_epochs
     for epoch in tqdm(range(num_epochs)):
         model.train()
         epoch_loss = 0
-        
         n_batches = len(train_loader)
         
-        for i, (X, Y) in enumerate(iter(train_loader)): # X: [batch_size, time_step, input_dim]    
-            
+        for i, (X, Y) in enumerate(iter(train_loader)): # X: [batch_size, seq_len, input_dim]    
             X = X.to(device)
             Y = Y.to(device)
             
             if model._type == 'lstm':
-                h_prev = torch.zeros([model.n_rec_layers, train_loader.batch_size, model.hidden_dim]).to(device)
-                c_prev = torch.zeros([model.n_rec_layers, train_loader.batch_size, model.hidden_dim]).to(device)
+                h_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
+                c_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
                 rec_prev = (h_prev, c_prev)
             elif model._type == 'rnn':
-                rec_prev = torch.zeros([model.n_rec_layers, train_loader.batch_size, model.hidden_dim]).to(device) 
+                rec_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device) 
             else:
                 raise ValueError('Model type incorrect')
             optimiser.zero_grad()
@@ -179,6 +176,17 @@ def train_rnn(model, train_loader, test_loader, optimiser, criterion, num_epochs
         
         if force_stop and i == 20:
             break
+        
+        if scheduler is not None and scheduler.get_last_lr()[0] < 1e-5:
+            if verbose:
+                print(f'Training completed with final epoch loss {epoch_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
+            
+            return {'train_losses': train_losses,
+            'eval_losses': eval_losses,
+            'best_eval_epoch': best_eval_epoch,
+            'init_eval_loss': init_eval_loss,
+            'best_eval_params': best_eval_params,
+            'best_eval_Y_hats': best_eval_Y_hats}
     
     hrs, mins, secs = elapsed_time(start, time.time())
 
@@ -200,28 +208,29 @@ def eval_rnn(model, test_loader, criterion, save_Y_hat=False):
     model.eval()
 
     if save_Y_hat:
-        Y_hats = []
+        Y_hats = []#
+    
 
     with torch.no_grad():
 
         eval_loss = 0
         n_batches = len(test_loader)
-        
-        if model._type == 'lstm':
-            h_prev = torch.zeros([model.n_rec_layers, test_loader.batch_size, model.hidden_dim]).to(device)
-            c_prev = torch.zeros([model.n_rec_layers, test_loader.batch_size, model.hidden_dim]).to(device)
-            rec_prev = (h_prev, c_prev)
-        elif model._type == 'rnn':
-            rec_prev = torch.zeros([model.n_rec_layers, test_loader.batch_size, model.hidden_dim]).to(device) 
-            # raise NotImplementedError('Implement training for RNN please')
-        else:
-            raise ValueError('Model type incorrect')
 
         for _, (X, Y) in enumerate(iter(test_loader)):
             
+            if model._type == 'lstm':
+                h_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
+                c_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
+                rec_prev = (h_prev, c_prev)
+            elif model._type == 'rnn':
+                    rec_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device) 
+                # raise NotImplementedError('Implement training for RNN please')
+            else:
+                raise ValueError('Model type incorrect')
+            
+            
             X = X.to(device)
             Y = Y.to(device)
-            # assert False
             Y_hat, rec_prev = model(X, rec_prev)
             
             if save_Y_hat:
@@ -236,9 +245,8 @@ def eval_rnn(model, test_loader, criterion, save_Y_hat=False):
     else:
         return eval_loss/n_batches
     
-def train_transformer(model, train_loader, test_loader, optimiser, criterion, num_epochs, verbose=True, force_stop=False, batch_first=False, scheduler=None, use_wandb=False, stim_type_indices=False):
-    if use_wandb:
-        import wandb
+def train_transformer(model, train_loader, test_loader, optimiser, criterion, num_epochs, verbose=True, force_stop=False, batch_first=True, scheduler=None, use_wandb=False, stim_type_indices=False):
+    
     start = time.time()
 
     eval_losses, train_losses, best_eval_epoch, best_eval_params = [], [], -1, -1
@@ -258,10 +266,13 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
         
         for _, (X, Y) in enumerate(iter(train_loader)):
             
-            if not batch_first:
-                # convert to seq_len, bs, input_dim)
+            if batch_first:
+                # convert to (seq_len, bs, input_dim)
                 X = X.permute(1,0,2).to(device)
                 Y = Y.permute(1,0,2).to(device)
+            else:
+                X = X.to(device)
+                Y = Y.to(device)
             
             optimiser.zero_grad()
             
@@ -300,6 +311,7 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
                 scheduler.step(eval_loss)
             else:
                 scheduler.step()
+                
         
         if verbose:
             epoch_end = time.time()
@@ -328,6 +340,23 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
                                 'random_loss': eval_losses_by_type[2][-1],
                                 'nonstim_loss':eval_losses_by_type[3][-1]})
         
+        if scheduler is not None and scheduler.get_last_lr()[0] < 1e-5:
+            if stim_type_indices is not False:
+
+                return {'train_losses': train_losses,
+                        'eval_losses': eval_losses,
+                        'eval_losses_by_type':eval_losses_by_type,
+                        'best_eval_epoch': best_eval_epoch,
+                        'init_eval_loss': init_eval_loss,
+                        'best_eval_params': best_eval_params}
+    
+            else:
+                return {'train_losses': train_losses,
+                        'eval_losses': eval_losses,
+                        'best_eval_epoch': best_eval_epoch,
+                        'init_eval_loss': init_eval_loss,
+                        'best_eval_params': best_eval_params}
+        
     hrs, mins, secs = elapsed_time(start, time.time())
 
     if verbose:
@@ -349,7 +378,7 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
                 'init_eval_loss': init_eval_loss,
                 'best_eval_params': best_eval_params}
 
-def eval_transformer(model, test_loader, criterion, batch_first=False):
+def eval_transformer(model, test_loader, criterion, batch_first=True):
     model.eval()
     
     with torch.no_grad():
@@ -364,10 +393,13 @@ def eval_transformer(model, test_loader, criterion, batch_first=False):
         n_batches = len(test_loader)
         
         for _, (X, Y) in enumerate(iter(test_loader)):
-            if not batch_first:
+            if batch_first:
                 # convert to (seq_len, bs, input_dim)
                 X = X.permute(1,0,2).to(device)
                 Y = Y.permute(1,0,2).to(device)
+            else:
+                X = X.to(device)
+                Y = Y.to(device)
             Y_hat = model(X)
             loss = criterion(Y_hat, Y)
             

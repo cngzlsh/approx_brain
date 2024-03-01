@@ -387,3 +387,6 @@ def process_spike_bins(spkt, spkid, cellTypesBygid, spike_bins, cutoff=80000, us
     n_bins = spike_data.shape[0]
     
     return spike_data, total_duration, n_bins
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
