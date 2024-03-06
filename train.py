@@ -107,7 +107,10 @@ def train_rnn(model, train_loader, test_loader, optimiser, criterion, num_epochs
     '''
     start = time.time()
     eval_losses, train_losses, best_eval_epoch, best_eval_params = [], [], -1, -1
-    init_eval_loss = eval_rnn(model, test_loader, criterion)
+    init_eval_loss, best_eval_Y_hats = eval_rnn(model, test_loader, criterion, save_Y_hat=True)
+    batch_first = model.rnn.batch_first
+    directions = int(model.rnn.bidirectional) + 1
+
     if verbose:
         print(f'Initial eval loss: {init_eval_loss}')
 
@@ -120,24 +123,24 @@ def train_rnn(model, train_loader, test_loader, optimiser, criterion, num_epochs
             X = X.to(device)
             Y = Y.to(device)
             
-            if model._type == 'lstm':
-                h_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
-                c_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
-                rec_prev = (h_prev, c_prev)
-            elif model._type == 'rnn':
-                rec_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device) 
-            else:
-                raise ValueError('Model type incorrect')
+            # if model._type == 'lstm':
+            #     h_prev = torch.zeros([model.n_rec_layers * directions, X.shape[0], model.rnn_output_dim]).to(device)
+            #     c_prev = torch.zeros([model.n_rec_layers * directions, X.shape[0], model.rnn_output_dim]).to(device)
+            #     rec_prev = (h_prev, c_prev)
+            # elif model._type == 'rnn':
+            #     rec_prev = torch.zeros([model.n_rec_layers * directions, X.shape[0], model.rnn_output_dim]).to(device) 
+            # else:
+            #     raise ValueError('Model type incorrect')
             optimiser.zero_grad()
             
-            # detach gradients from hidden tensors
-            if isinstance(rec_prev, torch.Tensor):
-                rec_prev.detach()
-                # pass
-            else:
-                rec_prev = tuple(t.detach() for t in rec_prev)
+            # # detach gradients from hidden tensors
+            # if isinstance(rec_prev, torch.Tensor):
+            #     rec_prev.detach()
+            #     # pass
+            # else:
+            #     rec_prev = tuple(t.detach() for t in rec_prev)
             
-            Y_hat, rec_prev = model(X, rec_prev)
+            Y_hat, _ = model(X)
             loss = criterion(Y_hat, Y)
             loss.backward()
             optimiser.step()
@@ -170,15 +173,16 @@ def train_rnn(model, train_loader, test_loader, optimiser, criterion, num_epochs
                 hrs, mins, secs = elapsed_time(start, epoch_end)
                 print(f'Epoch {epoch+1}: training loss {epoch_loss/n_batches}, eval loss {eval_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
             else:
-                if epoch % 50 == 0:
+                if epoch % int(num_epochs/20) == 0:
                     hrs, mins, secs = elapsed_time(start, epoch_end)
                     print(f'Epoch {epoch+1}: training loss {epoch_loss/n_batches}, eval loss {eval_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
         
         if force_stop and i == 20:
             break
         
-        if scheduler is not None and scheduler.get_last_lr()[0] < 1e-5:
+        if scheduler is not None and scheduler.get_last_lr()[0] < 1e-6:
             if verbose:
+                hrs, mins, secs = elapsed_time(start, time.time())
                 print(f'Training completed with final epoch loss {epoch_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
             
             return {'train_losses': train_losses,
@@ -206,9 +210,9 @@ def eval_rnn(model, test_loader, criterion, save_Y_hat=False):
     Evaluation function. Iterates through test set and compute loss.
     '''
     model.eval()
-
+    directions = int(model.rnn.bidirectional) + 1
     if save_Y_hat:
-        Y_hats = []#
+        Y_hats = []
     
 
     with torch.no_grad():
@@ -218,20 +222,19 @@ def eval_rnn(model, test_loader, criterion, save_Y_hat=False):
 
         for _, (X, Y) in enumerate(iter(test_loader)):
             
-            if model._type == 'lstm':
-                h_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
-                c_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device)
-                rec_prev = (h_prev, c_prev)
-            elif model._type == 'rnn':
-                    rec_prev = torch.zeros([model.n_rec_layers, X.shape[0], model.rnn_output_dim]).to(device) 
-                # raise NotImplementedError('Implement training for RNN please')
-            else:
-                raise ValueError('Model type incorrect')
-            
+            # if model._type == 'lstm':
+            #     h_prev = torch.zeros([model.n_rec_layers * directions, X.shape[0], model.rnn_output_dim]).to(device)
+            #     c_prev = torch.zeros([model.n_rec_layers * directions, X.shape[0], model.rnn_output_dim]).to(device)
+            #     rec_prev = (h_prev, c_prev)
+            # elif model._type == 'rnn':
+            #         rec_prev = torch.zeros([model.n_rec_layers * directions, X.shape[0], model.rnn_output_dim]).to(device) 
+            #     # raise NotImplementedError('Implement training for RNN please')
+            # else:
+            #     raise ValueError('Model type incorrect')
             
             X = X.to(device)
             Y = Y.to(device)
-            Y_hat, rec_prev = model(X, rec_prev)
+            Y_hat, _ = model(X)
             
             if save_Y_hat:
                 Y_hats.append(Y_hat)
@@ -256,7 +259,7 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
     
     init_eval_loss = eval_transformer(model, test_loader, criterion, batch_first=batch_first)
     if verbose:
-        print(f'Initial eval loss: {init_eval_loss}')
+        print(f'Initial eval loss: {init_eval_loss.mean()}')
         
     for epoch in tqdm(range(num_epochs)):
         
@@ -319,7 +322,7 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
                 hrs, mins, secs = elapsed_time(start, epoch_end)
                 print(f'Epoch {epoch+1}: training loss {epoch_loss/n_batches}, eval loss {eval_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
             else:
-                if epoch % 100 == 0:
+                if epoch == 0 or epoch % int(num_epochs/20) == 0:
                     hrs, mins, secs = elapsed_time(start, epoch_end)
                     print(f'Epoch {epoch+1}: training loss {epoch_loss/n_batches}, eval loss {eval_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
         if force_stop:
@@ -340,7 +343,7 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
                                 'random_loss': eval_losses_by_type[2][-1],
                                 'nonstim_loss':eval_losses_by_type[3][-1]})
         
-        if scheduler is not None and scheduler.get_last_lr()[0] < 1e-5:
+        if scheduler is not None and scheduler.get_last_lr()[0] < 1e-6:
             if stim_type_indices is not False:
 
                 return {'train_losses': train_losses,
@@ -360,7 +363,7 @@ def train_transformer(model, train_loader, test_loader, optimiser, criterion, nu
     hrs, mins, secs = elapsed_time(start, time.time())
 
     if verbose:
-        print(f'Training completed with final epoch loss {epoch_loss}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
+        print(f'Training completed with final epoch loss {epoch_loss / n_batches}. Time elapsed: {int(hrs)} h {int(mins)} m {int(secs)} s.')
 
     if stim_type_indices is not False:
 

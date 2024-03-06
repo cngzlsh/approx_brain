@@ -99,8 +99,8 @@ class BNN_Dataset(Dataset):
         return len(self.inputs)
     
     def __getitem__(self, idx):
-        input = self.inputs[idx,:]
-        label = self.labels[idx,:]
+        input = self.inputs[idx, :]
+        label = self.labels[idx, :]
         return input, label
 
 

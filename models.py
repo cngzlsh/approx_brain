@@ -56,6 +56,7 @@ class RecurrentDNN(nn.Module):
         self.pos_output = pos_output
         self.output_dim = output_dim
         self.bidirectional = bidirectional
+        self.directions = int(bidirectional) + 1
         self.n_input_layers = n_input_layers
         self.n_output_layers = n_output_layers
         self.output_step = output_step
@@ -76,10 +77,10 @@ class RecurrentDNN(nn.Module):
             self.rnn_output_dim = self.output_dim
         elif n_output_layers == 1:
             self.rnn_output_dim = self.hidden_dim
-            self.output_layers = nn.ModuleList([nn.Linear(self.rnn_output_dim, self.output_dim)])
+            self.output_layers = nn.ModuleList([nn.Linear(self.rnn_output_dim * self.directions, self.output_dim)])
         else:
             self.rnn_output_dim = self.hidden_dim
-            self.output_layers = nn.ModuleList([nn.Linear(self.rnn_output_dim, self.hidden_dim)])
+            self.output_layers = nn.ModuleList([nn.Linear(self.rnn_output_dim  * self.directions, self.hidden_dim)])
             for _ in range(n_output_layers-1):
                 self.output_layers.append(nn.Linear(self.hidden_dim, self.hidden_dim))
                 self.output_layers.append(nn.ReLU())
@@ -93,7 +94,7 @@ class RecurrentDNN(nn.Module):
         else:
             raise ValueError('Incorrect RNN type')
         
-    def forward(self, x, rec_prev):
+    def forward(self, x, rec_prev=None):
         
         bs, seq_len, input_dim = x.shape
         
@@ -103,18 +104,25 @@ class RecurrentDNN(nn.Module):
             for m in self.input_layers:
                 x = m(x)
 
+        if rec_prev is None:
+            if self._type == 'rnn':
+                rec_prev = torch.zeros(self.n_rec_layers * self.directions, bs, self.rnn_output_dim).to(x.device)
+            elif self._type == 'lstm':
+                rec_prev = (torch.zeros(self.n_rec_layers * self.directions, x.size(0), self.rnn_output_dim, device=x.device),
+                          torch.zeros(self.n_rec_layers * self.directions, x.size(0), self.rnn_output_dim, device=x.device))
+
         out, rec_prev = self.rnn(x, rec_prev)
-        
+
         if self.n_output_layers > 0:
             for m in self.output_layers:
-                out =m(out)
+                out = m(out)
         
         if self.pos_output:
             out = nn.ReLU()(out)
         
         assert out.shape == torch.Size([bs, seq_len, self.output_dim])
         if self.output_step == 1:
-            out = out[:,-1,:]
+            out = out[:,-1,:][:,None,:] # keep dimensionality consistant
         return out, rec_prev
 
 
@@ -132,6 +140,8 @@ class TransformerOneStep(nn.Module):
                 device,
                 max_len=30,
                 dropout=0.1,
+                decoder='linear',
+                decoder_hidden_dim=None,
                 use_mask=True,
                 pos_output=False,
                 bin_output=False,
@@ -164,7 +174,20 @@ class TransformerOneStep(nn.Module):
             nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads, dim_feedforward=hidden_dim, dropout=dropout), 
             num_layers=n_encoder_layers)
         
-        self.decoder = nn.Linear(d_model, output_dim)
+        if decoder == 'linear':
+            self.decoder = nn.Linear(d_model, output_dim)
+            if decoder_hidden_dim is not None:
+                print('Using a linear decoder, decoder hidden dim will be reset to 0.')
+        elif decoder == 'mlp':
+            assert decoder_hidden_dim is not None
+            self.decoder = nn.Sequential(
+                nn.Linear(d_model, decoder_hidden_dim),
+                nn.ReLU(),
+                self.dropout,
+                nn.Linear(decoder_hidden_dim, output_dim)
+                )
+        else:
+            raise NotImplementedError
     
     def _create_future_mask(self, seq_len):
         mask = (torch.triu(torch.ones(seq_len, seq_len)) == 1).transpose(0, 1)
@@ -179,7 +202,8 @@ class TransformerOneStep(nn.Module):
         # x = self.pe(x)
         mask = self._create_future_mask(seq_len).to(self.device)
         x = self.embedding_layer(x) * math.sqrt(self.d_model)
-        x = self.pe(x)
+        
+        x = self.pe(x) # shape [seq_len, bs, d_model]
 
         if self.use_future_mask:   
             h = self.encoder(x, mask=mask)
@@ -228,83 +252,94 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
     
-# class TransformerMultiSteps(nn.Module):
-#     '''
-#     Transformer model with multi-head attention encoder and a multi-head attention decoder.
-#     Handles variable length.
-#     Decoder need not have the same hyperparameters.
-#     '''
-#     def __init__(self, input_dim, d_model, num_heads, hidden_dim, output_dim, n_layers, device, 
-#                  pos_output=True, max_len=120, dropout=0.1, use_mask=False):
-#         super().__init__()
-#         self.input_dim = input_dim
-#         self.hidden_dim = hidden_dim
-#         self.output_dim = output_dim
+class TransformerMultiSteps(nn.Module):
+    '''
+    Transformer model with multi-head attention encoder and a multi-head attention decoder.
+    Handles variable length.
+    Decoder need not have the same hyperparameters.
+    '''
+    def __init__(self,
+                 input_dim,
+                 d_model,
+                 num_heads,
+                 hidden_dim,
+                 n_layers,
+                 output_dim, 
+                 device, 
+                 pos_output=False,#
+                 max_len=30, 
+                 dropout=0.1, 
+                 use_mask=True):
+        super().__init__()
         
-#         self.pos_output = pos_output
-#         self.dropout = nn.Dropout(dropout)
-#         self.use_future_mask_for_encoder = use_mask
-#         self.device = device
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         
-#         if isinstance(d_model, tuple): # different settings for encoder and decoder
-#             self.enc_d_model, self.dec_d_model = d_model
-#         else:
-#             self.enc_d_model = d_model
-#             self.dec_d_model = d_model
-#         if isinstance(num_heads, tuple):
-#             self.enc_num_heads, self.dec_num_heads = num_heads
-#         else:
-#             self.enc_num_heads = num_heads
-#             self.dec_num_heads = num_heads
-#         if isinstance(n_layers, tuple):
-#             self.enc_n_layers, self.dec_n_layers = n_layers
-#         else:
-#             self.enc_n_layers = n_layers
-#             self.dec_n_layers = n_layers
+        self.pos_output = pos_output
+        self.dropout = nn.Dropout(dropout)
+        self.use_future_mask = use_mask
+        self.device = device
         
-#         self.embedding_layer = nn.Linear(input_dim, d_model)
-#         self.relu = nn.ReLU()
-        
-#         self.pe = PositionalEncoding(d_model=d_model, dropout=dropout, max_len=max_len)
-#         self.encoder = nn.TransformerEncoder(
-#             nn.TransformerEncoderLayer(d_model=self.enc_d_model,
-#                                        nhead=self.enc_num_heads,
-#                                        dim_feedforward=hidden_dim,
-#                                        dropout=dropout), 
-#             num_layers=self.enc_n_layers)
-        
-#         self.decoder = nn.TransformerDecoder(
-#             nn.TransformerDecoderLayer(d_model=self.dec_d_model,
-#                                        nhead=self.dec_num_heads,
-#                                        dim_feedforward=hidden_dim,
-#                                        dropout=dropout),
-#             num_layers=self.dec_n_layers)
-        
-#     def _create_future_mask(self, x):
-#         batch_size, seq_len = x.size(1), x.size(0)
-#         mask = torch.tril(torch.ones(seq_len, seq_len))
-#         return mask
+        if isinstance(d_model, tuple): # different settings for encoder and decoder
+            self.enc_d_model, self.dec_d_model = d_model
+        else:
+            self.enc_d_model = d_model
+            self.dec_d_model = d_model
 
-#     def forward(self, src, tgt):
-#         # (seq_len, batch_size, input_dim)
-#         src_emb = self.dropout(self.embedding_layer(src) * math.sqrt(self.hidden_dim))
-#         tgt_emb = self.dropout(self.embedding_layer(tgt) * math.sqrt(self.hidden_dim)) 
+        if isinstance(num_heads, tuple):
+            self.enc_num_heads, self.dec_num_heads = num_heads
+        else:
+            self.enc_num_heads = num_heads
+            self.dec_num_heads = num_heads
+        if isinstance(n_layers, tuple):
+            self.enc_n_layers, self.dec_n_layers = n_layers
+        else:
+            self.enc_n_layers = n_layers
+            self.dec_n_layers = n_layers
         
-#         src_emb = self.pe(src_emb)
-#         tgt_emb = self.pe(tgt_emb)
-#         if self.use_future_mask_for_encoder:
-#             mask = self._create_future_mask(src_emb).to(self.device)
-#             enc_output = self.encoder(src_emb, mask=mask)
-#         else:
-#             enc_output = self.encoder(src_emb)
+        self.embedding_layer = nn.Linear(input_dim, d_model)
+        self.relu = nn.ReLU()
+        
+        self.pe = PositionalEncoding(d_model=d_model, dropout=dropout, max_len=max_len)
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=self.enc_d_model,
+                                       nhead=self.enc_num_heads,
+                                       dim_feedforward=hidden_dim,
+                                       dropout=dropout), 
+            num_layers=self.enc_n_layers)
+        
+        self.decoder = nn.TransformerDecoder(
+            nn.TransformerDecoderLayer(d_model=self.dec_d_model,
+                                       nhead=self.dec_num_heads,
+                                       dim_feedforward=hidden_dim,
+                                       dropout=dropout),
+            num_layers=self.dec_n_layers)
+        
+    def _create_future_mask(self, seq_len):
+        mask = (torch.triu(torch.ones(seq_len, seq_len)) == 1).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        return mask
+
+    def forward(self, src, tgt):
+        seq_len, bs, input_dim = src.shape
+        # (seq_len, batch_size, input_dim)
+        src_emb = self.dropout(self.embedding_layer(src) * math.sqrt(self.hidden_dim))
+        
+        src_emb = self.pe(src_emb)
+
+        if self.use_future_mask_for_encoder:
+            mask = self._create_future_mask(seq_len).to(self.device)
+            enc_output = self.encoder(src_emb, mask=mask)
+        else:
+            enc_output = self.encoder(src_emb)
             
-#         decoder_mask = self._create_future_mask(tgt_emb).to(self.device)
-#         out = self.decoder(tgt=tgt_emb, memory=enc_output, tgt_mask=decoder_mask)
+        decoder_mask = self._create_future_mask(seq_len).to(self.device)
+        out = self.decoder(tgt=enc_output, memory=enc_output, tgt_mask=decoder_mask)
         
-#         if self.pos_output:
-#             out = self.relu(out)
+        if self.pos_output:
+            out = self.relu(out)
         
-#         return out
+        return out
     
     
 if __name__ == '__main__':
