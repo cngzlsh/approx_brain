@@ -248,14 +248,35 @@ def eval_rnn(model, test_loader, criterion, save_Y_hat=False):
     else:
         return eval_loss/n_batches
     
-def train_transformer(model, train_loader, test_loader, optimiser, criterion, num_epochs, verbose=True, force_stop=False, batch_first=True, scheduler=None, use_wandb=False, stim_type_indices=False):
+def train_transformer(model,
+                      train_loader,
+                      test_loader,
+                      optimiser,
+                      criterion,
+                      num_epochs,
+                      verbose=True,
+                      force_stop=False,
+                      batch_first=True,
+                      scheduler=None,
+                      use_wandb=False,
+                      stim_type_indices=False,
+                      prev_return_dict=None):
     
     start = time.time()
 
-    eval_losses, train_losses, best_eval_epoch, best_eval_params = [], [], -1, -1
-    min_eval_loss = np.inf
-    if stim_type_indices is not False:
-        eval_losses_by_type = [[] for _ in range(len(stim_type_indices))]
+    if prev_return_dict is None:
+        eval_losses, train_losses, best_eval_epoch, best_eval_params = [], [], -1, -1
+        min_eval_loss = np.inf
+        if stim_type_indices is not False:
+            eval_losses_by_type = [[] for _ in range(len(stim_type_indices))]
+    else:
+        eval_losses = prev_return_dict['eval_losses']
+        train_losses = prev_return_dict['train_losses']
+        best_eval_epoch = prev_return_dict['best_eval_epoch']
+        best_eval_params = prev_return_dict['best_eval_params']
+        eval_losses_by_type = prev_return_dict['eval_losses_by_type']
+        min_eval_loss = np.min(prev_return_dict['eval_losses'])
+
     
     init_eval_loss = eval_transformer(model, test_loader, criterion, batch_first=batch_first)
     if verbose:

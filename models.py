@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+from collections import OrderedDict
+
 class FeedForwardDNN(nn.Module):
     '''
     Feed-forward deep neural network
@@ -224,6 +226,51 @@ class TransformerOneStep(nn.Module):
         assert y.shape == torch.Size([1, bs, self.output_dim])
             
         return y
+    
+    def freeze_weights(self):
+        for param in self.parameters():
+            param.requires_grad = False
+    
+    def unfreeze_weights(self):
+        for param in self.parameters():
+            param.requires_grad = True
+        print('All Weights are unfrozen.')
+    
+    def prepare_for_transfer_learning(self, new_input_dim, new_output_dim, freeze_weights=True):
+        # re-initialises the input and output layers, optionally freezes the params of the transformer encoder layer
+        if freeze_weights:
+            print('Encoder Weights are frozen.')
+            self.freeze_weights()
+        else:
+            self.unfreeze_weights()
+        
+        self.embedding_layer = nn.Linear(new_input_dim, self.d_model).to(self.device)
+        if isinstance(self.decoder, nn.Linear):
+            self.decoder = nn.Linear(self.d_model, new_output_dim).to(self.device)
+            print('Using a linear decoder, decoder hidden dim will be reset to 0.')
+        else:
+            assert self.decoder_hidden_dim is not None
+            self.decoder = nn.Sequential(
+                nn.Linear(self.d_model, self.decoder_hidden_dim),
+                nn.ReLU(),
+                self.dropout,
+                nn.Linear(self.decoder_hidden_dim, new_output_dim)
+                ).to(self.device)
+        
+        self.input_dim = new_input_dim
+        self.output_dim = new_output_dim
+        print(f'Reinitialised input and output layers with {self.input_dim} input units and {self.output_dim} output units.')
+    
+    def get_separate_params(self):
+        # returns parameters for the encoder as well as the input/output layers separately.
+        encoder_params_dict = OrderedDict()
+        non_encoder_params_dict = OrderedDict()
+        for key in self.state_dict().keys():
+            if 'encoder' in key:
+                encoder_params_dict[key] = self.state_dict()[key]
+            else:
+                non_encoder_params_dict[key] = self.state_dict()[key]
+        return encoder_params_dict, non_encoder_params_dict
     
 class PositionalEncoding(nn.Module):
     
