@@ -274,7 +274,8 @@ def train_transformer(model,
         train_losses = prev_return_dict['train_losses']
         best_eval_epoch = prev_return_dict['best_eval_epoch']
         best_eval_params = prev_return_dict['best_eval_params']
-        eval_losses_by_type = prev_return_dict['eval_losses_by_type']
+        if stim_type_indices is not False:
+            eval_losses_by_type = prev_return_dict['eval_losses_by_type']
         min_eval_loss = np.min(prev_return_dict['eval_losses'])
 
     

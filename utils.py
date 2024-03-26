@@ -390,3 +390,11 @@ def process_spike_bins(spkt, spkid, cellTypesBygid, spike_bins, cutoff=80000, us
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def bin_spikes(spks_1ms, bin_size):
+    assert spks_1ms.shape[1] > spks_1ms.shape[0]
+    n_bins = int(spks_1ms.shape[1] / bin_size)
+    binned_spks = np.zeros((spks_1ms.shape[0], n_bins))
+    for b in range(n_bins):
+        binned_spks[:,b] = np.sum(spks_1ms[:, int(bin_size * b): int(bin_size * (b+1))], axis=1)
+    return binned_spks
